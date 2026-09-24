@@ -11,7 +11,8 @@ export type ToolResult =
   | { ok: true; forModel: unknown; effect?: string } // effect: one line saying what changed in the world
   | { ok: false; code: string; fix: string };        // fix: one line the model can act on, not a stack trace
 
-export interface ToolContext { turnId: string; idempotencyKey: string }
+// signal fires at the turn deadline. Tools must honor it: one that ignores it holds the turn past its budget.
+export interface ToolContext { turnId: string; idempotencyKey: string; signal: AbortSignal }
 export interface Tool<I = any> {
   name: string;
   description: string;                 // the contract the model reads. Write it for a smart new hire
@@ -28,11 +29,11 @@ export type Message =
   | { role: 'tool'; callId: string; content: string };
 export interface Usage { input: number; output: number; model: string } // model = what actually answered
 export interface ModelReply { text: string; calls: ModelCall[]; usage: Usage }
-export interface Model { complete(req: { system: string; messages: Message[]; tools: Tool[] }): Promise<ModelReply> }
+export interface Model { complete(req: { system: string; messages: Message[]; tools: Tool[]; signal: AbortSignal }): Promise<ModelReply> }
 
 export interface Policy {
   maxCalls: number;       // scale with the task (e.g. 12 + 4 × attachments). Never unbounded
-  deadlineMs: number;     // wall clock for the whole turn
+  deadlineMs: number;     // wall clock for the whole turn. Size it from measured per-item time; it aborts in-flight calls
   maxTokens: number;      // input + output, summed over the turn
   maxResultChars: number; // a tool result larger than this is a tool-design bug, so it gets truncated where the model can see it
   maxToolErrors: number;  // consecutive tool failures the model may repair before the turn fails
@@ -56,11 +57,21 @@ interface Turn {
 }
 type Step = { kind: 'answered'; ok: boolean; code?: string } | { kind: 'gated'; pending: PendingAction };
 
-export async function runTurn(a: {
+export interface TurnArgs {
   turnId: string; model: Model; system: string; tools: Tool[]; policy: Policy;
   messages: Message[]; // prior history plus the new user message. Appended in place so the caller can persist it
   now?: () => number;
-}): Promise<{ outcome: Outcome; trace: TraceEvent[] }> {
+}
+
+export async function runTurn(a: TurnArgs): Promise<{ outcome: Outcome; trace: TraceEvent[] }> {
+  // The deadline aborts whatever is in flight. Checking it only between calls lets one hung call outlive the budget.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('TIME_BUDGET')), a.policy.deadlineMs);
+  try { return await loop(a, controller.signal); }
+  finally { clearTimeout(timer); }
+}
+
+async function loop(a: TurnArgs, signal: AbortSignal): Promise<{ outcome: Outcome; trace: TraceEvent[] }> {
   const t: Turn = { id: a.turnId, policy: a.policy, tools: new Map(a.tools.map(x => [x.name, x])),
     messages: a.messages, trace: [], effects: [], seen: new Map(), now: a.now ?? Date.now };
   const start = t.now();
@@ -70,13 +81,14 @@ export async function runTurn(a: {
     return { outcome, trace: t.trace };
   };
   const fail = (code: string, detail: string) => stop({ status: 'failed', code, detail, effects: t.effects });
+  const late = () => fail('TIME_BUDGET', `turn ran past ${a.policy.deadlineMs} ms`);
 
   for (;;) {
-    if (t.now() - start > a.policy.deadlineMs) return fail('TIME_BUDGET', `turn ran past ${a.policy.deadlineMs} ms`);
+    if (signal.aborted || t.now() - start > a.policy.deadlineMs) return late();
     if (tokens > a.policy.maxTokens) return fail('TOKEN_BUDGET', `turn used ${tokens} tokens`);
     let reply: ModelReply;
-    try { reply = await a.model.complete({ system: a.system, messages: a.messages, tools: a.tools }); }
-    catch (e) { return fail('MODEL_ERROR', e instanceof Error ? e.message : String(e)); }
+    try { reply = await a.model.complete({ system: a.system, messages: a.messages, tools: a.tools, signal }); }
+    catch (e) { return signal.aborted ? late() : fail('MODEL_ERROR', e instanceof Error ? e.message : String(e)); }
     tokens += reply.usage.input + reply.usage.output;
     t.trace.push({ at: t.now(), kind: 'model', usage: reply.usage, text: reply.text, calls: reply.calls.map(c => c.name) });
     a.messages.push({ role: 'assistant', content: reply.text, calls: reply.calls });
@@ -87,7 +99,11 @@ export async function runTurn(a: {
         closeBatch(t, reply.calls.slice(i), 'tool-call budget exhausted');
         return fail('CALL_BUDGET', `more than ${a.policy.maxCalls} tool calls`);
       }
-      const step = await handleCall(t, call);
+      const step = await handleCall(t, call, signal);
+      if (signal.aborted) { // whatever the tool did is already recorded. Report it, then stop
+        closeBatch(t, reply.calls.slice(i + 1), 'turn deadline passed');
+        return late();
+      }
       if (step.kind === 'gated') {
         closeBatch(t, reply.calls.slice(i + 1), 'paused for human confirmation; re-issue after it resolves');
         return stop({ status: 'awaiting_confirmation', pending: step.pending, effects: t.effects });
@@ -101,7 +117,7 @@ export async function runTurn(a: {
   }
 }
 
-async function handleCall(t: Turn, call: ModelCall): Promise<Step> {
+async function handleCall(t: Turn, call: ModelCall, signal: AbortSignal): Promise<Step> {
   const tool = t.tools.get(call.name);
   if (!tool) return answer(t, call, undefined, null, { ok: false, code: 'UNKNOWN_TOOL', fix: `use one of: ${[...t.tools.keys()].join(', ')}` });
   let raw: unknown;
@@ -119,7 +135,7 @@ async function handleCall(t: Turn, call: ModelCall): Promise<Step> {
   if (t.policy.gated.includes(tool.tier)) return gate(t, call, tool, parsed.value, key);
   const started = t.now();
   let result: ToolResult;
-  try { result = await tool.run(parsed.value, { turnId: t.id, idempotencyKey: key }); }
+  try { result = await tool.run(parsed.value, { turnId: t.id, idempotencyKey: key, signal }); }
   catch (e) { result = { ok: false, code: 'TOOL_CRASHED', fix: `${tool.name} failed: ${e instanceof Error ? e.message : String(e)}` }; }
   if (result.ok && result.effect) t.effects.push(result.effect);
   return answer(t, call, tool, parsed.value, result, t.now() - started, key);
@@ -149,13 +165,13 @@ function closeBatch(t: Turn, rest: ModelCall[], why: string) {
 
 // The only path that runs a gated action: outside the model loop, after a human decided.
 // Validate again here, because balances, limits and ownership may have changed since the proposal.
-export async function resolvePending(p: PendingAction, tools: Tool[], approved: boolean): Promise<ToolResult> {
+export async function resolvePending(p: PendingAction, tools: Tool[], approved: boolean, signal = new AbortController().signal): Promise<ToolResult> {
   if (!approved) return { ok: false, code: 'DECLINED', fix: 'the user declined; do not re-propose unless they ask' };
   const tool = tools.find(x => x.name === p.tool);
   if (!tool) return { ok: false, code: 'UNKNOWN_TOOL', fix: `${p.tool} is no longer available` };
   const parsed = tool.parse(p.input);
   if (!parsed.ok) return { ok: false, code: 'INVALID_ARGS', fix: parsed.error };
-  try { return await tool.run(parsed.value, { turnId: p.turnId, idempotencyKey: p.id }); }
+  try { return await tool.run(parsed.value, { turnId: p.turnId, idempotencyKey: p.id, signal }); }
   catch (e) { return { ok: false, code: 'TOOL_CRASHED', fix: e instanceof Error ? e.message : String(e) }; }
 }
 

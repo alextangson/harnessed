@@ -20,6 +20,7 @@ Trifecta check (private data + untrusted content + outbound or state change): wh
 |---|---|---|---|---|---|
 
 Identifiers the model sees must be ones it can quote back. Anything the code already knows, the code fills in.
+Internal-only capabilities (admin reads, exports) stay plain functions behind an existing admin surface. Anything registered as a tool gets listed to every client of the registry (REST, MCP, the agent itself).
 
 ## Invariants
 | Must hold regardless of model output | Enforced at (file/function) | Eval case |
@@ -30,7 +31,7 @@ Identifiers the model sees must be ones it can quote back. Anything the code alr
 
 ## Budgets
 - Tool calls: `<base> + <per item> × items`, capped at `<max>`.
-- Wall clock per turn, and per slow output.
+- Wall clock per turn, and per slow output. Derive each from measured per-item time and scale it with input size, like the call budget: a flat cap cuts off legitimate large batches. The deadline aborts in-flight calls; tools honor the signal.
 - Tokens per turn: assert it in a test.
 - Retries per external call, transient errors only.
 - Attempts per item across runs or polls before it goes to a human with the reason. Never an infinite retry.

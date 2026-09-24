@@ -1,13 +1,17 @@
 {
   "name": "harnessed",
-  "owner": { "name": "alextangson" },
-  "metadata": { "description": "Skills for building LLM agents you can prove." },
+  "owner": {
+    "name": "alextangson"
+  },
+  "metadata": {
+    "description": "Skills for building LLM agents you can prove."
+  },
   "plugins": [
     {
       "name": "harnessed",
       "source": "./",
       "description": "Skills for building LLM agents you can prove: harness engineering, behavior evals, and production lessons for tool-calling agents.",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }

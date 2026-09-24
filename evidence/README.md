@@ -74,3 +74,22 @@ Running its eval against a deliberately lying fake model caught the fake claimin
 - **The source list was checked on 2026-09-23.** Claims tied to a model generation will age.
 
 The scaffold's own tests (`node --test skills/agent-craft/scaffold/*.test.ts`) pass 11/11. Each guard was mutation-checked: breaking it fails a test.
+
+## v0.2 (2026-09-24): do trace review and LLM judges need their own skills?
+
+We planned two new skills, `agent-trace-review` and `llm-judge`, and four additions to agent-craft. Before writing any of them we ran six probes. agent-craft v0.1 was installed in every probe, which is the realistic setup, so the question is what a new skill would add on top of today's behavior. The skill triggered by itself in all six.
+
+| Probe | Setup | What Claude did |
+|---|---|---|
+| T1 · error analysis on real data | 40 synthetic support-agent turns ([`v0.2/traces.jsonl`](v0.2/traces.jsonl)) with 5 planted failure types in 8, 5, 4, 3 and 2 turns, plus 18 clean turns. The answer key was hidden ([`v0.2/answer-key.json`](v0.2/answer-key.json), [`v0.2/gen_traces.py`](v0.2/gen_traces.py)) | **Found all 5 types with exact counts and turn ids.** It worked out the money under-refunded. Artifacts of our generator (reused order ids, replies that differ from the model's text) it flagged as "needs verification", not as conclusions. It put the fixes in the harness and turned each failure type into a regression case run 3 times |
+| T2 · method | "Thousands of Langfuse traces; how do I analyze them?" | Separate random and suspicious samples. Binary success plus the first failing step. Humans do open coding before any LLM labeling. 5–10 categories with counts, and a stated ±10-point sample error. Chooses which layer owns each fix. Failures become a regression set gated on pass^3 |
+| J1 · judge with 1–10 scores | The user insists on a holistic 1–10 score and a rewrite below 7 | Kept the 10-point scale but built it from 10 binary checks, evidence first, plus veto items. Deterministic rules run in code. At most 2 rewrites, then a human gets the best version. Before trusting the 7-point line, calibrate to ≥85% agreement on 30–50 human-labeled posts |
+| J2 · saturated judge | A cheap judge gives about 5/5, including 4.8 with a reflector in frame | A present/absent/unsure verdict per defect, evidence before verdict, code decides pass/fail, and it fails closed. A one-minute diagnosis separates "can't see it" from "doesn't care". 30 labeled images split into dev and holdout; generator and judge share one spec |
+| P1 · turn timeout on Workers | 1–40 photos per turn | Budget scales with photos and is capped. Calls are really cancelled. A persisted deadline survives Durable Object resets. A `wrangler dev` smoke test, because Node tests don't prove Workers behavior. Defaults calibrated from real p99. **It also found that our scaffold checked the deadline only between calls** |
+| P2 · admin tool and injection plan | A denylist proxy; the agent reads text and photos and spends | Flagged the denylist as default-allow. Required a per-tool audience and one deny-by-default dispatch; the agent never holds admin tools. A 14-category injection plan that covers limit splitting, cross-tenant access, markdown exfiltration, image text and stored memory, with a deterministic layer, real-model pass^k and canary strings |
+
+**Decision: no new skills.** Current behavior already covers trace review and judges, so writing them would fail this repo's own test: would the model get this wrong without the line? v0.2 fixes only what the probes surfaced.
+- **Scaffold.** The turn deadline now aborts in-flight model and tool calls: `Model.complete` receives the signal, as do `ToolContext.signal` and the OpenAI-compatible adapter, and nothing retries after an abort. There are 3 new tests (14 in total), and breaking each new guard fails a test.
+- **Design card template.** Two lessons slipped during a real build even though direct questions got them right: a flat turn cap (it should scale with input), and a registered admin-only tool (it leaked into listings) [P]. They now live in the template, which carries decisions from design into the build, rather than in more reference text.
+
+**Limits.** Each probe ran once. There was no arm without the skill: the question was the marginal value of a new skill. The traces are synthetic.

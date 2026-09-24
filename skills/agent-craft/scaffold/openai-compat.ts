@@ -5,7 +5,7 @@
 // them by position instead of index silently drops calls. Stream only once you need it for UX.
 import type { Message, Model, ModelReply, Tool } from './harness.ts';
 
-type ErrorCode = 'TIMEOUT' | 'NETWORK' | 'HTTP' | 'BAD_RESPONSE' | 'TRUNCATED';
+type ErrorCode = 'TIMEOUT' | 'NETWORK' | 'HTTP' | 'BAD_RESPONSE' | 'TRUNCATED' | 'ABORTED';
 export class ModelError extends Error {
   code: ErrorCode; status?: number;
   constructor(code: ErrorCode, message: string, status?: number) { super(`${code}: ${message}`); this.code = code; this.status = status; }
@@ -20,7 +20,7 @@ export interface OpenAICompatOptions {
 
 export function openAICompatible(o: OpenAICompatOptions): Model {
   return {
-    async complete({ system, messages, tools }) {
+    async complete({ system, messages, tools, signal }) {
       const body = JSON.stringify({
         model: o.model, max_tokens: o.maxTokens,
         messages: [{ role: 'system', content: system }, ...messages.map(toWire)],
@@ -29,11 +29,11 @@ export function openAICompatible(o: OpenAICompatOptions): Model {
       let last: unknown;
       for (let attempt = 0; attempt <= o.retries; attempt++) {
         // Parsing sits inside the retry: a 200 with an empty or broken body is a transient failure too.
-        try { return parseReply(await post(o, body)); }
+        try { return parseReply(await post(o, body, signal)); }
         catch (e) {
           last = e;
-          if (!retryable(e)) throw e;
-          await new Promise(r => setTimeout(r, 500 * 2 ** attempt));
+          if (signal.aborted || !retryable(e)) throw e;
+          await pause(500 * 2 ** attempt, signal);
         }
       }
       throw last;
@@ -50,17 +50,25 @@ function toWire(m: Message) {
   return { role: 'assistant', content: m.content || null, ...(calls.length ? { tool_calls: calls } : {}) };
 }
 
-async function post(o: OpenAICompatOptions, body: string): Promise<unknown> {
-  let res: Response;
+// Waits between retries, but gives up as soon as the turn is aborted.
+const pause = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const id = setTimeout(resolve, ms);
+  signal.addEventListener('abort', () => { clearTimeout(id); reject(new ModelError('ABORTED', 'the turn was aborted')); }, { once: true });
+});
+
+async function post(o: OpenAICompatOptions, body: string, signal: AbortSignal): Promise<unknown> {
+  let res: Response, text: string;
   try {
+    // The turn's deadline and this attempt's timeout both cancel the request; the body read is covered too.
     res = await fetch(`${o.baseURL.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST', body, signal: AbortSignal.timeout(o.timeoutMs),
+      method: 'POST', body, signal: AbortSignal.any([signal, AbortSignal.timeout(o.timeoutMs)]),
       headers: { 'content-type': 'application/json', authorization: `Bearer ${o.apiKey}` },
     });
+    text = await res.text();
   } catch (e) {
+    if (signal.aborted) throw new ModelError('ABORTED', 'the turn was aborted');
     throw new ModelError(e instanceof Error && e.name === 'TimeoutError' ? 'TIMEOUT' : 'NETWORK', String(e));
   }
-  const text = await res.text();
   if (!res.ok) throw new ModelError('HTTP', `${res.status} ${text.slice(0, 300)}`, res.status);
   try { return JSON.parse(text); } catch { throw new ModelError('BAD_RESPONSE', `non-JSON body: ${text.slice(0, 200)}`); }
 }
@@ -82,5 +90,5 @@ function parseReply(json: any): ModelReply {
 function retryable(e: unknown): boolean {
   if (!(e instanceof ModelError)) return false;
   if (e.code === 'HTTP') return e.status === 429 || (e.status ?? 0) >= 500;
-  return e.code !== 'TRUNCATED';
+  return e.code !== 'TRUNCATED' && e.code !== 'ABORTED';
 }

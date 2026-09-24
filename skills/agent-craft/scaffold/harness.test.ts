@@ -106,6 +106,29 @@ test('an eval catches a reply that claims a refund nothing performed', async () 
   assert.match(report.failures[0].why, /no matching effect/);
 });
 
+test('the deadline aborts a hung model call instead of waiting for it', { timeout: 2000 }, async () => {
+  let aborted = false;
+  const hung: Model = { complete: ({ signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => { aborted = true; reject(signal.reason); })) };
+  const started = Date.now();
+  const { outcome } = await runTurn({ turnId: 'h1', model: hung, system: 's', tools: tools(newWorld()), policy: { ...policy, deadlineMs: 50 }, messages: user('x') });
+  assert.equal(outcome.status === 'failed' && outcome.code, 'TIME_BUDGET');
+  assert.ok(aborted, 'the model call saw the abort');
+  assert.ok(Date.now() - started < 1000);
+});
+
+test('a tool gets the deadline signal; the turn stops and no queued call runs', { timeout: 2000 }, async () => {
+  const w = newWorld(), msgs = user('x');
+  const slow: Tool = { name: 'slow_lookup', tier: 'read', description: 'waits on a slow backend', parameters: { type: 'object' },
+    parse: () => ({ ok: true, value: {} }),
+    run: (_input, ctx) => new Promise(resolve => ctx.signal.addEventListener('abort', () => resolve({ ok: false, code: 'ABORTED', fix: 'deadline passed' }))) };
+  const model = scripted([{ calls: [call('slow_lookup', {}, 's1'), call('lookup_order', { orderId: '1001' }, 's2')] }]);
+  const { outcome } = await runTurn({ turnId: 'h2', model, system: 's', tools: [slow, ...tools(w)], policy: { ...policy, deadlineMs: 50 }, messages: msgs });
+  assert.equal(outcome.status === 'failed' && outcome.code, 'TIME_BUDGET');
+  assert.equal(w.lookups, 0, 'the queued call never ran');
+  const answered = new Set(msgs.flatMap(m => m.role === 'tool' ? [m.callId] : []));
+  assert.ok(answered.has('s1') && answered.has('s2'), 'history stays valid for the next turn');
+});
+
 test('evals report per-scenario pass rate and pass^k', async () => {
   let trial = 0;
   const scenario: Scenario<World> = {

@@ -24,7 +24,7 @@ async function fakeEndpoint(responses: { status: number; body: unknown }[]) {
 
 const ok = (message: object, extra: object = {}) => ({ status: 200, body: { model: 'served-model', choices: [{ message, finish_reason: 'stop' }], usage: { prompt_tokens: 7, completion_tokens: 3 }, ...extra } });
 const opts = (baseURL: string) => ({ baseURL, apiKey: 'k', model: 'asked-model', maxTokens: 512, timeoutMs: 2_000, retries: 2 });
-const req = { system: 'sys', messages: [{ role: 'user' as const, content: 'hi' }], tools: [] };
+const req = { system: 'sys', messages: [{ role: 'user' as const, content: 'hi' }], tools: [], signal: new AbortController().signal };
 
 test('sends max_tokens, records the model that actually answered, normalizes object arguments', async () => {
   const ep = await fakeEndpoint([ok({ content: null, tool_calls: [{ id: 'a', function: { name: 'x', arguments: { n: 1 } } }] })]);
@@ -53,4 +53,18 @@ test('does not retry truncation or 4xx, and says which it was', async () => {
     await assert.rejects(openAICompatible(opts(auth.baseURL)).complete(req), (e: unknown) => e instanceof ModelError && e.status === 401);
     assert.equal(cut.seen.length + auth.seen.length, 2);
   } finally { cut.close(); auth.close(); }
+});
+
+test('an aborted turn cancels the in-flight request and does not retry', { timeout: 3000 }, async () => {
+  let requests = 0;
+  const server = createServer(() => { requests++; }); // never answers
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as AddressInfo;
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 50);
+  try {
+    await assert.rejects(openAICompatible({ ...opts(`http://127.0.0.1:${port}/v1`), timeoutMs: 10_000 }).complete({ ...req, signal: controller.signal }),
+      (e: unknown) => e instanceof ModelError && e.code === 'ABORTED');
+    assert.equal(requests, 1);
+  } finally { server.closeAllConnections(); server.close(); }
 });

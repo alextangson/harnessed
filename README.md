@@ -46,7 +46,7 @@ So this skill doesn't re-teach judgment. It adds the part that's missing:
 | `operate.md` | Latency UX, retries, fallbacks, cost, observability, rollout, harnessing *coding* agents |
 | `sources.md` | All 66 sources with dates, and where they disagree |
 
-**A tested scaffold** (TypeScript, zero dependencies, Node ≥ 23.6, 11 tests, each guard mutation-checked):
+**A tested scaffold** (TypeScript, zero dependencies, Node ≥ 23.6, 14 tests, each guard mutation-checked):
 - `harness.ts`: the loop with gates, budgets, idempotency and a trace;
 - `openai-compat.ts`: an adapter for any OpenAI-compatible endpoint, with typed errors, validation inside retries, and `max_tokens` always set;
 - `evals.ts`: scenarios × trials × invariants, pass^k, fingerprinting, and `claimsBacked`.
@@ -61,6 +61,7 @@ We tested it like [superpowers](https://github.com/obra/superpowers) tests skill
 - The skill triggered on its own in 5 of 6 agent scenarios and stayed silent on a non-agent batch script.
 - In a blind review, behavior verifiability rose by about 2 points out of 5 in every pair where the skill triggered. Safety judgment held level. The reviewer preferred the with-skill output in 3 of those 4 pairs.
 - The cost was proportionality, down 1 point in three pairs, mostly from over-gating. The fixes are in: cumulative limits, and no blanket human approval.
+- **v0.2**: on 40 synthetic traces with 5 planted failure types, it found all 5 with exact counts. It also designed calibrated judges unprompted. So separate trace-review and judge skills were not added. See [evidence](evidence/README.md#v02-2026-09-24-do-trace-review-and-llm-judges-need-their-own-skills).
 - Limits: one run per scenario, one reviewer. See [evidence](evidence/README.md#limits-of-this-evidence).
 
 ## Install
