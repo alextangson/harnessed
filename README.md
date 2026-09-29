@@ -4,6 +4,8 @@
 
 [中文说明](README.zh-CN.md)
 
+**Scope.** "Harness" here means the runtime around an agent *you build*: tools, gates, budgets, traces, evals. It is not the repo setup that keeps a *coding* agent on track across sessions (AGENTS.md, feature lists, progress files, init scripts). For that, see [learn-harness-engineering](https://github.com/walkinglabs/learn-harness-engineering) and its `harness-creator` skill.
+
 ## Why
 
 Claude is already a good agent engineer. In our baseline runs without this skill, it:

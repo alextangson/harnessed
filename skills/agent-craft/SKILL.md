@@ -19,6 +19,8 @@ What it did not do was make the agent's behavior verifiable from the start:
 
 So this skill does not re-teach judgment. It carries invariants from design into code, evals and traces, and it records lessons that only show up against real models. Incidents tagged [P] come from the author's production e-commerce agent. When you cite one, say where it comes from rather than presenting it as your own experience.
 
+Not for setting up a repo so a coding agent stays on track across sessions (AGENTS.md, feature lists, progress and handoff files). That is a different harness; `operate.md` has the one rule this skill keeps about it.
+
 ## Stance
 
 The model proposes; the harness decides.

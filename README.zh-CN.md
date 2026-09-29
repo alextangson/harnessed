@@ -4,6 +4,8 @@
 
 [English](README.md)
 
+**适用范围。** 这里的 harness 指*你自己造的* agent 外面那层运行时：工具、闸门、预算、trace、eval。它不管让*写代码的* agent 跨会话不跑偏的仓库配置（AGENTS.md、feature list、进度文件、init 脚本）；那部分请看 [learn-harness-engineering](https://github.com/walkinglabs/learn-harness-engineering) 和它的 `harness-creator` skill。
+
 ## 为什么做这个
 
 打个比方：Claude 本来就是个不错的 agent 工程师，但它交付的是“代码能跑”，而不是“行为被验证过”。
